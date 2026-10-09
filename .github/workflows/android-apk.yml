@@ -17,140 +17,220 @@ jobs:
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
+      # 1. دریافت سورس برنامه
       - name: Checkout source
         uses: actions/checkout@v4
 
+      # 2. نصب Node.js بدون فعال کردن cache
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: package-lock.json
 
+      # 3. نصب Java موردنیاز Android
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
+      # 4. آماده‌سازی Android SDK
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # 5. بررسی فایل‌های اصلی پروژه
       - name: Verify project files
         shell: bash
         run: |
           set -e
+
+          echo "Checking repository root..."
+
           test -f package.json || {
             echo "ERROR: package.json not found in repository root."
             exit 1
           }
+
           test -f index.html || {
             echo "ERROR: index.html not found in repository root."
             exit 1
           }
+
           test -f capacitor.config.ts || {
             echo "ERROR: capacitor.config.ts not found in repository root."
             exit 1
           }
 
-      - name: Inspect package scripts
+          echo "Required files found."
+
+      # 6. بررسی تنظیمات package.json
+      - name: Inspect package configuration
         shell: bash
         run: |
-          node --input-type=module -e "
-            import fs from 'node:fs';
-            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            console.log('Package:', p.name);
-            console.log('Scripts:', JSON.stringify(p.scripts ?? {}, null, 2));
-            console.log('Dependencies:', JSON.stringify(p.dependencies ?? {}, null, 2));
-          "
+          node --input-type=module -e '
+            import fs from "node:fs";
 
+            const pkg = JSON.parse(
+              fs.readFileSync("package.json", "utf8")
+            );
+
+            console.log("Package name:", pkg.name ?? "not specified");
+            console.log("Package version:", pkg.version ?? "not specified");
+            console.log(
+              "Build script:",
+              pkg.scripts?.build ?? "MISSING"
+            );
+          '
+
+      # 7. نصب وابستگی‌های پروژه
       - name: Install project dependencies
         run: npm install --no-audit --no-fund
 
+      # 8. بررسی وجود اسکریپت build
       - name: Verify build script
         shell: bash
         run: |
-          node --input-type=module -e "
-            import fs from 'node:fs';
-            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            if (!p.scripts?.build) {
-              console.error('ERROR: package.json does not define a build script.');
+          node --input-type=module -e '
+            import fs from "node:fs";
+
+            const pkg = JSON.parse(
+              fs.readFileSync("package.json", "utf8")
+            );
+
+            if (!pkg.scripts?.build) {
+              console.error(
+                "ERROR: package.json does not define scripts.build."
+              );
               process.exit(1);
             }
-          "
 
+            console.log("Build script:", pkg.scripts.build);
+          '
+
+      # 9. ساخت نسخه وب برنامه
       - name: Build web application
         run: npm run build
 
+      # 10. بررسی خروجی Vite
       - name: Verify web output
         shell: bash
         run: |
           set -e
-          test -f dist/index.html || {
-            echo "ERROR: dist/index.html was not generated."
-            exit 1
-          }
 
-      - name: Verify Capacitor dependency
+          if [ ! -f dist/index.html ]; then
+            echo "ERROR: dist/index.html was not generated."
+            echo "Check the Vite build configuration."
+            exit 1
+          fi
+
+          echo "Web build output verified."
+
+      # 11. بررسی وابستگی‌های Capacitor
+      - name: Verify Capacitor dependencies
         shell: bash
         run: |
-          node --input-type=module -e "
-            import fs from 'node:fs';
-            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            if (!p.dependencies?.['@capacitor/core'] &&
-                !p.devDependencies?.['@capacitor/core']) {
-              console.error('ERROR: @capacitor/core is missing.');
-              process.exit(1);
-            }
-            if (!p.dependencies?.['@capacitor/cli'] &&
-                !p.devDependencies?.['@capacitor/cli']) {
-              console.error('ERROR: @capacitor/cli is missing.');
-              process.exit(1);
-            }
-            if (!p.dependencies?.['@capacitor/android'] &&
-                !p.devDependencies?.['@capacitor/android']) {
-              console.error('ERROR: @capacitor/android is missing.');
-              process.exit(1);
-            }
-          "
+          node --input-type=module -e '
+            import fs from "node:fs";
 
+            const pkg = JSON.parse(
+              fs.readFileSync("package.json", "utf8")
+            );
+
+            const allDeps = {
+              ...pkg.dependencies,
+              ...pkg.devDependencies
+            };
+
+            const required = [
+              "@capacitor/core",
+              "@capacitor/cli",
+              "@capacitor/android"
+            ];
+
+            const missing = required.filter(
+              name => !allDeps[name]
+            );
+
+            if (missing.length > 0) {
+              console.error(
+                "Missing Capacitor dependencies:",
+                missing.join(", ")
+              );
+              process.exit(1);
+            }
+
+            console.log("Capacitor dependencies verified.");
+          '
+
+      # 12. ساخت پروژه Android در صورت نیاز
       - name: Generate Android project if needed
         shell: bash
         run: |
           set -e
+
           if [ ! -d android ]; then
+            echo "Android project not found. Creating it..."
             npx cap add android
+          else
+            echo "Existing Android project found."
           fi
 
+      # 13. همگام‌سازی فایل‌های وب با Android
       - name: Sync Capacitor Android
         run: npx cap sync android
 
+      # 14. بررسی ساختار پروژه Android
       - name: Verify Android project
         shell: bash
         run: |
           set -e
-          test -f android/gradlew
-          test -f android/build.gradle -o -f android/build.gradle.kts -o \
-               -f android/settings.gradle -o -f android/settings.gradle.kts
 
+          test -f android/gradlew || {
+            echo "ERROR: Android Gradle wrapper not found."
+            exit 1
+          }
+
+          test -d android/app || {
+            echo "ERROR: Android app directory not found."
+            exit 1
+          }
+
+          echo "Android project verified."
+
+      # 15. ساخت APK
       - name: Build debug APK
         working-directory: android
+        shell: bash
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          set -e
 
+          chmod +x gradlew
+
+          ./gradlew \
+            assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      # 16. بررسی وجود فایل APK
       - name: Verify APK
         shell: bash
         run: |
           set -e
-          APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          test -f "$APK"
-          echo "APK created successfully:"
-          ls -lh "$APK"
 
+          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "ERROR: APK file was not generated."
+            exit 1
+          fi
+
+          echo "APK generated successfully."
+          ls -lh "$APK_PATH"
+
+      # 17. بارگذاری APK برای دریافت
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
