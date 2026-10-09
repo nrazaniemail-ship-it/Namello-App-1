@@ -23,7 +23,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
 
       - name: Set up Java
         uses: actions/setup-java@v5
@@ -31,42 +30,89 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Verify required project files
+      - name: Verify required files
         run: |
           set -eu
-          test -f package.json
-          test -f index.html
-          test -f capacitor.config.ts
-          echo "Project files found."
+          test -f package.json || {
+            echo "ERROR: package.json not found in repository root."
+            exit 1
+          }
+          test -f index.html || {
+            echo "ERROR: index.html not found in repository root."
+            exit 1
+          }
+          test -f capacitor.config.ts || {
+            echo "ERROR: capacitor.config.ts not found."
+            exit 1
+          }
+          echo "Required files found."
 
-      - name: Inspect package scripts
+      - name: Inspect package configuration
         run: |
-          node -e "const p=require('./package.json'); console.log(JSON.stringify({name:p.name,scripts:p.scripts},null,2))"
+          node --input-type=module -e "
+            import fs from 'node:fs';
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            console.log('Package:', p.name);
+            console.log('Scripts:', JSON.stringify(p.scripts || {}, null, 2));
+            console.log('Dependencies:', JSON.stringify({
+              ...p.dependencies,
+              ...p.devDependencies
+            }, null, 2));
+          "
 
-      - name: Install dependencies
+      - name: Install project dependencies
         run: npm install --no-audit --no-fund
+
+      - name: Verify build script
+        run: |
+          node --input-type=module -e "
+            import fs from 'node:fs';
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            if (!p.scripts || !p.scripts.build) {
+              console.error('ERROR: package.json does not define a build script.');
+              process.exit(1);
+            }
+            console.log('Build command:', p.scripts.build);
+          "
 
       - name: Check backend syntax if present
         run: |
           if [ -f server.mjs ]; then
             node --check server.mjs
           else
-            echo "No server.mjs at repository root; skipping backend syntax check."
+            echo "No root server.mjs found; skipping backend syntax check."
           fi
 
       - name: Build web application
         run: npm run build
 
-      - name: Verify web build
+      - name: Verify web output
         run: |
           set -eu
-          test -f dist/index.html
-          echo "Web build verified."
+          test -s dist/index.html || {
+            echo "ERROR: dist/index.html was not generated."
+            exit 1
+          }
+          echo "Web output verified."
 
-      - name: Verify Capacitor dependency
+      - name: Verify Capacitor dependencies
         run: |
-          node -e "console.log('Capacitor CLI:', require.resolve('@capacitor/cli/package.json'))"
-          node -e "console.log('Android platform:', require.resolve('@capacitor/android/package.json'))"
+          node --input-type=module -e "
+            import fs from 'node:fs';
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const deps = {
+              ...p.dependencies,
+              ...p.devDependencies
+            };
+            for (const name of ['@capacitor/cli', '@capacitor/core', '@capacitor/android']) {
+              if (!deps[name]) {
+                console.error('ERROR: Missing dependency:', name);
+                process.exitCode = 1;
+              } else {
+                console.log(name + ': ' + deps[name]);
+              }
+            }
+          "
 
       - name: Generate Android project
         run: npx cap add android
@@ -91,7 +137,11 @@ jobs:
         run: |
           set -eu
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK"
+          test -s "$APK" || {
+            echo "ERROR: APK file was not generated."
+            exit 1
+          }
+          echo "APK generated successfully."
           sha256sum "$APK"
           ls -lh "$APK"
 
