@@ -1,1 +1,114 @@
+name: Namello Android APK Build
 
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: namello-android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run tests
+        run: npm test
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Build web application
+        run: npm run build
+
+      - name: Verify required assets
+        run: |
+          set -eu
+          for asset in icon-dashboard-logo.png icon-sessions.png icon-journal.png icon-mt5.jpg icon-tradingview.png icon-192.png icon-512.png; do
+            test -s "dist/$asset" || {
+              echo "Missing required asset: dist/$asset"
+              exit 1
+            }
+          done
+
+      - name: Generate Android project
+        run: npx cap add android
+
+      - name: Set Android app version
+        working-directory: android
+        run: |
+          sed -i 's/versionCode [0-9]*/versionCode 33/' app/build.gradle
+          sed -i 's/versionName "[^"]*"/versionName "1.0.32"/' app/build.gradle
+
+      - name: Configure launcher icon
+        run: |
+          set -eu
+          mkdir -p android/app/src/main/res/drawable-nodpi
+          cp assets/icon-only.png android/app/src/main/res/drawable-nodpi/namello_launcher.png
+          sed -i 's#android:icon="@mipmap/ic_launcher"#android:icon="@drawable/namello_launcher"#' android/app/src/main/AndroidManifest.xml
+          sed -i 's#android:roundIcon="@mipmap/ic_launcher_round"#android:roundIcon="@drawable/namello_launcher"#' android/app/src/main/AndroidManifest.xml
+          grep -q 'android:icon="@drawable/namello_launcher"' android/app/src/main/AndroidManifest.xml
+
+      - name: Sync Capacitor Android
+        run: npx cap sync android
+
+      - name: Verify Android project
+        run: |
+          set -eu
+          test -s android/app/src/main/res/drawable-nodpi/namello_launcher.png
+          grep -q 'versionCode 33' android/app/build.gradle
+          grep -q 'versionName "1.0.32"' android/app/build.gradle
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Verify APK
+        run: |
+          set -eu
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          sha256sum "$APK"
+          ls -lh "$APK"
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Namello-1.0.32-Android-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
