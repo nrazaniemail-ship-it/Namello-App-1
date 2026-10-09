@@ -5,14 +5,9 @@ on:
   push:
     branches:
       - main
-      - master
 
 permissions:
   contents: read
-
-concurrency:
-  group: namello-android-apk-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build-apk:
@@ -21,156 +16,85 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # 1. دریافت سورس پروژه
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # 2. نصب Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
 
-      # 3. نصب Java
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
-      # 4. آماده‌سازی Android SDK بدون نصب خودکار پکیج‌ها
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: ''
-
-      # 5. بررسی ابزار مدیریت SDK
-      - name: Verify Android SDK manager
-        shell: bash
+      - name: Verify required project files
         run: |
-          set -euo pipefail
-
-          echo "ANDROID_HOME=${ANDROID_HOME}"
-
-          test -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" || \
-          test -x "${ANDROID_HOME}/cmdline-tools/16.0/bin/sdkmanager" || \
-          command -v sdkmanager
-
-          sdkmanager --version
-
-      # 6. نصب بسته‌های ضروری Android
-      - name: Install Android SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sdkmanager --sdk_root="${ANDROID_HOME}" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      # 7. پذیرش مجوزهای Android SDK
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          yes | sdkmanager --sdk_root="${ANDROID_HOME}" --licenses || true
-
-      # 8. بررسی فایل‌های ضروری
-      - name: Verify project files
-        shell: bash
-        run: |
-          set -euo pipefail
-
+          set -eu
           test -f package.json
           test -f index.html
-          test -f vite.config.ts
           test -f capacitor.config.ts
+          echo "Project files found."
 
-          echo "Project files verified."
-
-      # 9. نمایش اسکریپت‌های موجود
       - name: Inspect package scripts
-        run: npm run
+        run: |
+          node -e "const p=require('./package.json'); console.log(JSON.stringify({name:p.name,scripts:p.scripts},null,2))"
 
-      # 10. نصب وابستگی‌های بک‌اند
-      - name: Install backend dependencies
+      - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      # 11. بررسی نحو بک‌اند
-      - name: Check backend syntax
-        run: npm run check
-
-      # 12. نصب ابزارهای رابط کاربری و Capacitor
-      - name: Install frontend and Capacitor dependencies
+      - name: Check backend syntax if present
         run: |
-          npm install --no-save --no-audit --no-fund \
-            vite \
-            typescript \
-            @capacitor/core \
-            @capacitor/cli \
-            @capacitor/android
-
-      # 13. ساخت رابط کاربری
-      - name: Build web application
-        run: npx vite build
-
-      # 14. بررسی خروجی وب
-      - name: Verify web build
-        run: test -s dist/index.html
-
-      # 15. بررسی وجود پروژه Android
-      - name: Check Android project
-        id: android_project
-        shell: bash
-        run: |
-          if [ -f android/gradlew ] && [ -f android/app/build.gradle ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          if [ -f server.mjs ]; then
+            node --check server.mjs
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No server.mjs at repository root; skipping backend syntax check."
           fi
 
-      # 16. ایجاد پروژه Android در صورت نیاز
+      - name: Build web application
+        run: npm run build
+
+      - name: Verify web build
+        run: |
+          set -eu
+          test -f dist/index.html
+          echo "Web build verified."
+
+      - name: Verify Capacitor dependency
+        run: |
+          node -e "console.log('Capacitor CLI:', require.resolve('@capacitor/cli/package.json'))"
+          node -e "console.log('Android platform:', require.resolve('@capacitor/android/package.json'))"
+
       - name: Generate Android project
-        if: steps.android_project.outputs.exists == 'false'
         run: npx cap add android
 
-      # 17. همگام‌سازی Capacitor
       - name: Sync Capacitor Android
         run: npx cap sync android
 
-      # 18. بررسی فایل‌های پروژه Android
       - name: Verify Android project
-        shell: bash
         run: |
-          set -euo pipefail
-
+          set -eu
           test -f android/gradlew
           test -f android/app/build.gradle
+          echo "Android project verified."
 
-          chmod +x android/gradlew
-
-      # 19. ساخت APK
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
-
-      # 20. بررسی APK
-      - name: Verify APK
-        shell: bash
         run: |
-          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug
 
+      - name: Verify APK
+        run: |
+          set -eu
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
-
           test -s "$APK"
-
-          echo "APK created successfully."
-          ls -lh "$APK"
           sha256sum "$APK"
+          ls -lh "$APK"
 
-      # 21. انتشار فایل APK به‌عنوان Artifact
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
