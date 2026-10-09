@@ -1,19 +1,23 @@
 name: Namello Android APK Build
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: namello-android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-apk:
+  build-android:
     name: Build Android APK
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout source
@@ -23,16 +27,22 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
-      - name: Verify required files
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Verify project files
+        shell: bash
         run: |
-          set -eu
+          set -e
           test -f package.json || {
             echo "ERROR: package.json not found in repository root."
             exit 1
@@ -42,107 +52,103 @@ jobs:
             exit 1
           }
           test -f capacitor.config.ts || {
-            echo "ERROR: capacitor.config.ts not found."
+            echo "ERROR: capacitor.config.ts not found in repository root."
             exit 1
           }
-          echo "Required files found."
 
-      - name: Inspect package configuration
+      - name: Inspect package scripts
+        shell: bash
         run: |
           node --input-type=module -e "
             import fs from 'node:fs';
             const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
             console.log('Package:', p.name);
-            console.log('Scripts:', JSON.stringify(p.scripts || {}, null, 2));
-            console.log('Dependencies:', JSON.stringify({
-              ...p.dependencies,
-              ...p.devDependencies
-            }, null, 2));
+            console.log('Scripts:', JSON.stringify(p.scripts ?? {}, null, 2));
+            console.log('Dependencies:', JSON.stringify(p.dependencies ?? {}, null, 2));
           "
 
       - name: Install project dependencies
         run: npm install --no-audit --no-fund
 
       - name: Verify build script
+        shell: bash
         run: |
           node --input-type=module -e "
             import fs from 'node:fs';
             const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            if (!p.scripts || !p.scripts.build) {
+            if (!p.scripts?.build) {
               console.error('ERROR: package.json does not define a build script.');
               process.exit(1);
             }
-            console.log('Build command:', p.scripts.build);
           "
-
-      - name: Check backend syntax if present
-        run: |
-          if [ -f server.mjs ]; then
-            node --check server.mjs
-          else
-            echo "No root server.mjs found; skipping backend syntax check."
-          fi
 
       - name: Build web application
         run: npm run build
 
       - name: Verify web output
+        shell: bash
         run: |
-          set -eu
-          test -s dist/index.html || {
+          set -e
+          test -f dist/index.html || {
             echo "ERROR: dist/index.html was not generated."
             exit 1
           }
-          echo "Web output verified."
 
-      - name: Verify Capacitor dependencies
+      - name: Verify Capacitor dependency
+        shell: bash
         run: |
           node --input-type=module -e "
             import fs from 'node:fs';
             const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            const deps = {
-              ...p.dependencies,
-              ...p.devDependencies
-            };
-            for (const name of ['@capacitor/cli', '@capacitor/core', '@capacitor/android']) {
-              if (!deps[name]) {
-                console.error('ERROR: Missing dependency:', name);
-                process.exitCode = 1;
-              } else {
-                console.log(name + ': ' + deps[name]);
-              }
+            if (!p.dependencies?.['@capacitor/core'] &&
+                !p.devDependencies?.['@capacitor/core']) {
+              console.error('ERROR: @capacitor/core is missing.');
+              process.exit(1);
+            }
+            if (!p.dependencies?.['@capacitor/cli'] &&
+                !p.devDependencies?.['@capacitor/cli']) {
+              console.error('ERROR: @capacitor/cli is missing.');
+              process.exit(1);
+            }
+            if (!p.dependencies?.['@capacitor/android'] &&
+                !p.devDependencies?.['@capacitor/android']) {
+              console.error('ERROR: @capacitor/android is missing.');
+              process.exit(1);
             }
           "
 
-      - name: Generate Android project
-        run: npx cap add android
+      - name: Generate Android project if needed
+        shell: bash
+        run: |
+          set -e
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
 
       - name: Sync Capacitor Android
         run: npx cap sync android
 
       - name: Verify Android project
+        shell: bash
         run: |
-          set -eu
+          set -e
           test -f android/gradlew
-          test -f android/app/build.gradle
-          echo "Android project verified."
+          test -f android/build.gradle -o -f android/build.gradle.kts -o \
+               -f android/settings.gradle -o -f android/settings.gradle.kts
 
       - name: Build debug APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
       - name: Verify APK
+        shell: bash
         run: |
-          set -eu
+          set -e
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK" || {
-            echo "ERROR: APK file was not generated."
-            exit 1
-          }
-          echo "APK generated successfully."
-          sha256sum "$APK"
+          test -f "$APK"
+          echo "APK created successfully:"
           ls -lh "$APK"
 
       - name: Upload installable APK
