@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # 1. دریافت کدهای مخزن
+      # 1. دریافت سورس پروژه
       - name: Checkout source
         uses: actions/checkout@v4
 
@@ -30,38 +30,54 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: package.json
 
-      # 3. نصب Java موردنیاز Android
+      # 3. نصب Java
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
-      # 4. آماده‌سازی Android SDK
+      # 4. آماده‌سازی Android SDK بدون نصب خودکار پکیج‌ها
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
-      # 5. نصب بسته‌های ضروری Android SDK
-      - name: Install Android SDK packages
+      # 5. بررسی ابزار مدیریت SDK
+      - name: Verify Android SDK manager
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Android SDK: ${ANDROID_HOME}"
+          echo "ANDROID_HOME=${ANDROID_HOME}"
 
-          sdkmanager --sdk_root="${ANDROID_HOME}" --version
+          test -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" || \
+          test -x "${ANDROID_HOME}/cmdline-tools/16.0/bin/sdkmanager" || \
+          command -v sdkmanager
 
-          yes | sdkmanager --sdk_root="${ANDROID_HOME}" --licenses || true
+          sdkmanager --version
+
+      # 6. نصب بسته‌های ضروری Android
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
 
           sdkmanager --sdk_root="${ANDROID_HOME}" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      # 6. بررسی فایل‌های اصلی پروژه
+      # 7. پذیرش مجوزهای Android SDK
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --sdk_root="${ANDROID_HOME}" --licenses || true
+
+      # 8. بررسی فایل‌های ضروری
       - name: Verify project files
         shell: bash
         run: |
@@ -74,19 +90,19 @@ jobs:
 
           echo "Project files verified."
 
-      # 7. نمایش اسکریپت‌های تعریف‌شده
+      # 9. نمایش اسکریپت‌های موجود
       - name: Inspect package scripts
         run: npm run
 
-      # 8. نصب وابستگی‌های بک‌اند
+      # 10. نصب وابستگی‌های بک‌اند
       - name: Install backend dependencies
         run: npm install --no-audit --no-fund
 
-      # 9. بررسی نحو فایل سرور
+      # 11. بررسی نحو بک‌اند
       - name: Check backend syntax
         run: npm run check
 
-      # 10. نصب ابزارهای ساخت رابط کاربری و Android
+      # 12. نصب ابزارهای رابط کاربری و Capacitor
       - name: Install frontend and Capacitor dependencies
         run: |
           npm install --no-save --no-audit --no-fund \
@@ -96,15 +112,15 @@ jobs:
             @capacitor/cli \
             @capacitor/android
 
-      # 11. ساخت رابط کاربری وب
+      # 13. ساخت رابط کاربری
       - name: Build web application
         run: npx vite build
 
-      # 12. بررسی خروجی وب
+      # 14. بررسی خروجی وب
       - name: Verify web build
         run: test -s dist/index.html
 
-      # 13. بررسی وجود پروژه Android
+      # 15. بررسی وجود پروژه Android
       - name: Check Android project
         id: android_project
         shell: bash
@@ -115,16 +131,16 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # 14. ساخت پروژه Android در صورت نیاز
+      # 16. ایجاد پروژه Android در صورت نیاز
       - name: Generate Android project
         if: steps.android_project.outputs.exists == 'false'
         run: npx cap add android
 
-      # 15. همگام‌سازی Capacitor
+      # 17. همگام‌سازی Capacitor
       - name: Sync Capacitor Android
         run: npx cap sync android
 
-      # 16. بررسی ساختار پروژه Android
+      # 18. بررسی فایل‌های پروژه Android
       - name: Verify Android project
         shell: bash
         run: |
@@ -135,12 +151,12 @@ jobs:
 
           chmod +x android/gradlew
 
-      # 17. ساخت APK نسخه Debug
+      # 19. ساخت APK
       - name: Build debug APK
         working-directory: android
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
-      # 18. بررسی فایل APK
+      # 20. بررسی APK
       - name: Verify APK
         shell: bash
         run: |
@@ -150,11 +166,11 @@ jobs:
 
           test -s "$APK"
 
-          echo "APK successfully created."
+          echo "APK created successfully."
           ls -lh "$APK"
           sha256sum "$APK"
 
-      # 19. انتشار فایل APK برای دریافت
+      # 21. انتشار فایل APK به‌عنوان Artifact
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
