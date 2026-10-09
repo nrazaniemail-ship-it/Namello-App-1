@@ -21,75 +21,140 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # 1. دریافت کدهای مخزن
       - name: Checkout source
         uses: actions/checkout@v4
 
+      # 2. نصب Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: package.json
 
+      # 3. نصب Java موردنیاز Android
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
+      # 4. آماده‌سازی Android SDK
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # 5. نصب بسته‌های ضروری Android SDK
       - name: Install Android SDK packages
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          set -euo pipefail
 
+          echo "Android SDK: ${ANDROID_HOME}"
+
+          sdkmanager --sdk_root="${ANDROID_HOME}" --version
+
+          yes | sdkmanager --sdk_root="${ANDROID_HOME}" --licenses || true
+
+          sdkmanager --sdk_root="${ANDROID_HOME}" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # 6. بررسی فایل‌های اصلی پروژه
       - name: Verify project files
+        shell: bash
         run: |
-          set -eu
+          set -euo pipefail
+
           test -f package.json
           test -f index.html
           test -f vite.config.ts
           test -f capacitor.config.ts
-          test -f assets/icon-only.png
-          node --version
-          npm --version
 
+          echo "Project files verified."
+
+      # 7. نمایش اسکریپت‌های تعریف‌شده
       - name: Inspect package scripts
         run: npm run
 
-      - name: Install dependencies
+      # 8. نصب وابستگی‌های بک‌اند
+      - name: Install backend dependencies
         run: npm install --no-audit --no-fund
 
+      # 9. بررسی نحو فایل سرور
       - name: Check backend syntax
         run: npm run check
 
-      - name: Install frontend build dependencies
-        run: npm install --no-save vite typescript @capacitor/core @capacitor/cli @capacitor/android --no-audit --no-fund
+      # 10. نصب ابزارهای ساخت رابط کاربری و Android
+      - name: Install frontend and Capacitor dependencies
+        run: |
+          npm install --no-save --no-audit --no-fund \
+            vite \
+            typescript \
+            @capacitor/core \
+            @capacitor/cli \
+            @capacitor/android
 
+      # 11. ساخت رابط کاربری وب
       - name: Build web application
         run: npx vite build
 
+      # 12. بررسی خروجی وب
       - name: Verify web build
         run: test -s dist/index.html
 
+      # 13. بررسی وجود پروژه Android
+      - name: Check Android project
+        id: android_project
+        shell: bash
+        run: |
+          if [ -f android/gradlew ] && [ -f android/app/build.gradle ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 14. ساخت پروژه Android در صورت نیاز
       - name: Generate Android project
+        if: steps.android_project.outputs.exists == 'false'
         run: npx cap add android
 
+      # 15. همگام‌سازی Capacitor
       - name: Sync Capacitor Android
         run: npx cap sync android
 
+      # 16. بررسی ساختار پروژه Android
+      - name: Verify Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f android/gradlew
+          test -f android/app/build.gradle
+
+          chmod +x android/gradlew
+
+      # 17. ساخت APK نسخه Debug
       - name: Build debug APK
         working-directory: android
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
+      # 18. بررسی فایل APK
       - name: Verify APK
+        shell: bash
         run: |
-          set -eu
-          APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK"
-          sha256sum "$APK"
-          ls -lh "$APK"
+          set -euo pipefail
 
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          test -s "$APK"
+
+          echo "APK successfully created."
+          ls -lh "$APK"
+          sha256sum "$APK"
+
+      # 19. انتشار فایل APK برای دریافت
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
